@@ -27,7 +27,7 @@ class SpatialSNOSS(object):
         self.topo = Dataset(dem)
         self.temperature_ds = Dataset(air_temp)
         self.precip_ds = Dataset(precip)
-        self.snow_rho_ds = Dataset(snow_density)
+        self.new_rho_ds = Dataset(snow_density)
 
         self.rho_ice = 917.0 # density of ice
         self.g = 9.81 #Gravity
@@ -41,6 +41,7 @@ class SpatialSNOSS(object):
         """
         sets up the output netcdf file
         """
+        print("Setting up outputs file at :\n {0}".format(out_f))
         self.out = Dataset(out_f, "w", format="NETCDF4",clobber=True)
 
         self.out.createDimension('time',self.nt)
@@ -58,19 +59,24 @@ class SpatialSNOSS(object):
 
         self.out.createVariable('stability','f',dimensions=('time','y','x','z'))
         self.out.createVariable('snow_density','f',dimensions=('time','y','x','z'))
-        self.out.createVariable('basal_temp','f',dimensions=('time','y','x','z'))
+        self.out.createVariable('basal_temp','f',dimensions=('y','x','z'))
 
         #Assign domain value to output
         self.out.variables['x'] = self.topo.variables['x'][:]
         self.out.variables['y'] = self.topo.variables['y'][:]
         self.out.variables['z'] = np.array(np.arange(0,self.max_depth+self.resolution,self.resolution))
 
+    def calculate_slope(self):
+        print('Calculating slope...')
+        sx,sy = np.gradient(self.topo.variables['dem'])
+        slope = np.arctan2(sy,sx)
+        return slope
 
     def setup_domain(self, max_depth=5.0, resolution = 0.1):
         """
-        Takes in the dem filename and the max depth to be modeled
-        resolution is  number of layers to track over the potential depth domain
+        resolution is z domain spacing to track over the potential depth domain
         """
+        print("Setting up model domain...")
         self.resolution = resolution # Z cell size
         self.max_depth = max_depth
 
@@ -83,7 +89,8 @@ class SpatialSNOSS(object):
 
         #Assumes we start at 0 hours
         self.dt = (self.precip_ds.variables['time'][-1])/self.precip_ds.variables['time'].size
-
+        self.calculate_slope()
+        self.slope = self.topo.variables['dem']
 
     def print_intro(self):
         msg = "SPATIAL SNOSS"
@@ -108,8 +115,9 @@ class SpatialSNOSS(object):
         print("Total Cells: {0}".format(self.nx*self.ny,self.nz))
 
     def calculate_viscosity(self,t,x,y,z):
+        #print("Calculating viscosity...")
         rho_z = self.rho[t,y,x,z]
-        T_z = self.basal_temp
+        T_z = self.basal_temp[y,x,z]
         term1 = self.b1*np.exp(self.b2*(rho_z/self.rho_ice))
         term2 = np.exp(self.E/(self.R*T_z))
         T_s = self.basal_temp[y,x,z]
@@ -117,75 +125,88 @@ class SpatialSNOSS(object):
         return term1*term2
 
     def calculate_overburden(self,t,x,y,z):
-        if z <= self.depth[t,y,x]:
+        #print("Calculating sigma_zz...")
+
+        if self.z[z] <= self.depth[t,y,x]:
 
             over_head_mass = np.sum(self.precip[z:t,y,x])
-            result = self.g*self.cos(self.slope[y,x])
+            result = self.g*(np.cos(self.slope[y,x]))**2
         else:
             result = 0.0
 
         return result
 
+    def calculate_density(self,t,y,x,z):
+        #print("Calculating density...")
+
+        n_zz = self.calculate_viscosity(t,y,x,z)
+        sigma_zz = self.calculate_overburden(t,y,x,z)
+        sigma_m = 75.0
+        #RHS
+        rhs = self.rho[t-1,y,x,z]*((sigma_zz+sigma_m)/(n_zz))
+
+        self.rho[t,y,x,z] = self.dt*60.0*60.0*rhs+self.rho[t-1,y,x,z]
+
     def initialize_model(self):
         #Print out info
+        print("Initializing model run...")
         self.print_intro()
         self.print_overview()
 
         #Make variables easy to use
         self.air_temp = self.temperature_ds.variables['air_temp']
         self.precip = self.precip_ds.variables['precip']
-        self.rho = self.snow_rho_ds.variables['snow_density']
+        self.new_rho = self.new_rho_ds.variables['snow_density']
 
         self.depth = self.out.variables['depth']
         self.stability = self.out.variables['stability']
         self.basal_temp = self.out.variables['basal_temp']
+        self.rho = self.out.variables['snow_density']
+
         self.z = self.out.variables['z']
 
         #Calculate first time step:
         #Calculate the new snow depth
-        snow_id = self.rho[0] > 0
+        snow_id = self.new_rho[0] > 0
         data = np.zeros((self.ny,self.nx))
-        data[snow_id] =  0.001*(self.precip[t][snow_id])/self.rho[t][snow_id]
-        self.depth[t] = data
+        data[snow_id] =  0.001*(self.precip[0][snow_id])/np.array(self.new_rho[0][snow_id])
+        self.depth[0] = data
 
-        self.depth_index =
-
-        for y in range(self.ny):
-            for x in range(self.nx):
-                for z in range(self.nz):
-                    n_zz = self.calculate_viscosity(t,y,x,z)
-                    sigma_zz = self.calculate_overburden(t,y,x,z)
-                    sigma_m = 75.0
-                    self.rho[t,y,x,z] =
+        self.rho[0,:,:,0] = self.new_rho[0]
+        self.basal_temp[:,:,0] = self.air_temp[0]
+        self.slope = self.calculate_slope()
 
     def run_model(self):
-
+        print("Running simulation...")
+        self.initialize_model()
 
         #Iterate through all time,space
         for t in range(1,self.nt):
+            print("Solving for hour: %s" % t)
 
             #Calculate the new snow depth
-            snow_id = self.rho[t] > 0
+            snow_id = self.new_rho[t] > 0
             data = np.zeros((self.ny,self.nx))
-            data[snow_id] =  0.001*(self.precip[t][snow_id])/self.rho[t][snow_id]
+            data[snow_id] =  0.001*(self.precip[t][snow_id])/self.new_rho[t][snow_id]
             if t != 0:
                 self.depth[t] = data+self.depth[t-1]
             else:
                 self.depth[t] = data
 
-            self.depth_index =
 
             for y in range(self.ny):
                 for x in range(self.nx):
                     for z in range(self.nz):
-                        n_zz = self.calculate_viscosity(t,y,x,z)
-                        sigma_zz = self.calculate_overburden(t,y,x,z)
-                        sigma_m = 75.0
-                        self.rho[t,y,x,z] =
+                        if self.z[z] < self.depth[t,y,x] :
+                            n_zz = self.calculate_viscosity(t,y,x,z)
+                            sigma_zz = self.calculate_overburden(t,y,x,z)
+                            sigma_m = 75.0
+                            self.calculate_density(t,y,x,z)
+
     def close(self):
         self.temperature_ds.close()
         self.precip_ds.close()
-        self.snow_rho_ds.close()
+        self.new_rho_ds.close()
         self.out.close()
 
 if __name__ == '__main__':
