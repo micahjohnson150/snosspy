@@ -1,0 +1,26 @@
+INTRODUCTION
+============
+SNOSSPY is a python implementation of the Snow Slope Stability model originally
+put forth by Conway and Wilbur in 1999
+
+Since then there have been several applications of the model but none have been
+in a spatial context. Here SNOSS is applied spatially using the Spatial
+Resources Modeling Framework (SMRF) that was began by Dr. Scott Havens in late
+2015. Here the data generate by SMRF is used to force the SNOSS model.
+
+INSTALLATION
+============
+SNOSSPY requires the docker to run the SMRF. Please visit LINK to DOCKER
+
+Now install the python requirements by:
+
+..code-block:
+
+  pip install -r requirements.txt
+
+
+USAGE
+=====
+To create all the files necessary for a run, just run the docker from the commandline
+
+docker run -it -v "$(pwd)"/forcings:/data:rw scotthavens/smrf

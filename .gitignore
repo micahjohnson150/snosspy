@@ -1,0 +1,4 @@
+*.pyc
+*/precip.nc
+*/air_temp.nc
+
